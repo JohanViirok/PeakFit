@@ -17,6 +17,10 @@ from scipy import optimize
 from scipy.sparse import csc_matrix, spdiags
 from scipy.sparse.linalg import spsolve
 
+INITIAL_PEAK_AREA = 10
+INITIAL_PEAK_FWHM = 1
+
+
 def find_positive_peak_positions(data, threshold: float, min_dist: float) -> List[float]:
     '''
     Finds positive peak positions with a height threshold and a minimum distance.
@@ -45,7 +49,6 @@ def find_positive_peaks(datalist, threshold, min_dist):
     for i, data in enumerate(datalist):
         peak_pos = find_positive_peak_positions(data, threshold=threshold, min_dist=min_dist)
         peak_positions.append(peak_pos)
-
     return peak_positions
 
 
@@ -153,6 +156,17 @@ class FitResultPlot(QDialog):
             self.figure.tight_layout()
 
 
+class Peak():
+    def __init__(self, position:float, area:float, fwhm:float, parameter:float, manual=False):
+        self.position = position
+        self.area = area
+        self.fwhm = fwhm
+        self.parameter = parameter
+        self.manual = manual
+
+    def __str__(self):
+        return f'Peak ['f'pos: {self.position:.2f}, area: {self.area:.2f}, fwhm: {self.fwhm:.2f}, parameter: {self.parameter:.2f}]'
+
 
 class Window(QDialog):
     def __init__(self, datalist, parameters, parent=None):
@@ -165,11 +179,11 @@ class Window(QDialog):
         self.datalist = copy.deepcopy(datalist)
         self.fitted_peak_parameters = []
         self.fit_errors = []
-
-        self.peaks = [[] for _ in range(len(datalist))]
+        self.peaks:List[Peak] = []
         self.fit_lines = []
         self.als_baselines = []
-
+        self.initial_parameter_lines = []
+        self.showInitialParameters = False
         self.resize(1440, 900)
         self.setWindowFlags(self.windowFlags() |
                             Qt.WindowSystemMenuHint |
@@ -306,6 +320,10 @@ class Window(QDialog):
         self.subtractALSButton = QPushButton('Subtract ALS')
         self.subtractALSButton.clicked.connect(self.subtract_als_from_datalist)
 
+        # Show initial parameters
+        self.showInitialParametersButton = QPushButton('Show fit pars')
+        self.showInitialParametersButton.clicked.connect(self.initial_parameters_button_callback)
+
         # Fit peaks
         self.fitPeaksButton = QPushButton('Fit peaks')
         self.fitPeaksButton.clicked.connect(self.fit_peaks)
@@ -331,6 +349,7 @@ class Window(QDialog):
         self.plotButtonBox.addWidget(self.findPeaksButton)
         self.plotButtonBox.addWidget(self.removePeaksButton)
         self.plotButtonBox.addWidget(self.subtractALSButton)
+        self.plotButtonBox.addWidget(self.showInitialParametersButton)
         self.plotButtonBox.addWidget(self.fitPeaksButton)
         self.plotButtonBox.addWidget(self.progressBar)
         self.plotButtonBox.addStretch(1)
@@ -391,10 +410,12 @@ class Window(QDialog):
 
         self.lines = plot_waterfall(self.datalist, self.parameters, self.ax, stackscale=self.stackscale, line_color='red')
         self.plot_peak_positions()
+        self.show_initial_parameters()
         self.ax.set_xlabel('Wavenumber (cm$^{-1}$)')
 
-        self.rectangle_selector = RectangleSelector(self.ax, self.remove_peaks, drawtype='box', useblit=True,
-                                                    button=[1, 3],  # don't use middle button
+        self.rectangle_selector = RectangleSelector(self.ax, self.remove_peaks, drawtype='box', useblit=True, button=[3],
+                                                    minspanx=5, minspany=5, spancoords='pixels', interactive=False)
+        self.left_click_drag = RectangleSelector(self.ax, self.add_peak_with_par, drawtype='box', useblit=True, button=[1],
                                                     minspanx=5, minspany=5, spancoords='pixels', interactive=False)
         cid = self.figure.canvas.mpl_connect('button_press_event', self.onclick)
         self.change_xlimit()
@@ -455,77 +476,80 @@ class Window(QDialog):
         self.minDistValueBox.setText(str(self.minDistSlider.value()))
 
     def find_peaks(self):
-
         peaks = find_positive_peaks(self.datalist, threshold=float(self.thresholdValueBox.text()),
                                     min_dist=self.minDistSlider.value())
-        self.peaks = peaks
+
+        for peak in self.peaks:
+            if not peak.manual:
+                try:
+                    peak.scatter_point.remove()
+                except (AttributeError, ValueError):
+                    pass
+
+        self.peaks = [p for p in self.peaks if p.manual]
+        for i,row in enumerate(peaks):
+            parameter = self.parameters[i]
+            for peak_position in row:
+                self.peaks.append(Peak(peak_position, INITIAL_PEAK_AREA, INITIAL_PEAK_FWHM, parameter))
         self.plot_peak_positions()
 
     def plot_peak_positions(self):
-        try:
-            self.scatter_points.remove()
-        except (AttributeError, ValueError):
-            pass
 
         xmin, xmax = self.get_xlimits()
-        peak_xy = [[], []]
-        for i, peaks_per_parameter in enumerate(self.peaks):
-            if peaks_per_parameter is not None:
-                peaks_in_range = [x for x in peaks_per_parameter if xmin <= x <= xmax]
-                peak_xy[0].extend(peaks_in_range)
-                peak_xy[1].extend(len(peaks_in_range) * [self.parameters[i] * self.stackscale])
-        self.scatter_points = self.ax.scatter(peak_xy[0], peak_xy[1], color='k')
+        for peak in self.peaks:
+            try:
+                peak.scatter_point.remove()
+            except (AttributeError, ValueError): pass
+            if xmin <= peak.position <= xmax:
+                color = 'k' if peak.manual else 'b'
+                peak.scatter_point = self.ax.scatter(peak.position, peak.parameter*self.stackscale, c=color)
         self.canvas.draw()
 
     def fit_peaks(self):
         self.progressBar.show()
-        peaks = self.peaks
+        # peaks = self.peaks
         fit_data, lines, fit_errors = [], [], []
         use_previous_fit_results = len(self.fitted_peak_parameters) > 0
         use_previous_fit_results = False
         als_baseline_calculated = len(self.als_baselines) > 0
 
+        print('Fitting parameter: ', end='')
         for i, data in enumerate(self.datalist):
+            print(f'{self.parameters[i]}, ', end='', flush=True)
             x, y = data
             if als_baseline_calculated:
                 y = y - self.als_baselines[i][1]
             initial_parameters = [0, 0, 0]
             bounds_min = [-np.inf,-np.inf,-np.inf]
             bounds_max = [np.inf, np.inf, np.inf]
-            if peaks[i] is not None:
-                for peak in peaks[i]:
-                    initial_parameters.extend([float(peak), 10, 1])
-                    bounds_min.extend([peak-3, 0, 0])
-                    bounds_max.extend([peak+3, np.inf, np.inf])
-            if use_previous_fit_results:
-                number_of_peaks_difference = int(len(peaks[i]) - (len(self.fitted_peak_parameters[i])-3)/3)
-                initial_parameters = self.fitted_peak_parameters[i]
-                if number_of_peaks_difference > 0:
-                    # only_one_peak = 1 if len(peaks[i]) == 1 else 0
-                    print(initial_parameters, peaks[i])
-                    start_index = int(len(peaks[i]) - number_of_peaks_difference)
-                    for j in range(start_index, len(peaks[i])):
-                        print('adding one peak to parameters')
-                        initial_parameters = np.append(initial_parameters, [float(peaks[i][j]), 10, 1])
-                    print(initial_parameters)
-                    print(bounds_min)
-                    print(bounds_max)
+            peaks = [p for p in self.peaks if p.parameter == self.parameters[i]]
+            for peak in peaks:
+                try:
+                    initial_parameters.extend([peak.fitted_position, peak.fitted_area, peak.fitted_fwhm])
+                except AttributeError:
+                    initial_parameters.extend([peak.position, peak.area, peak.fwhm])
+                bounds_min.extend([peak.position-3, 0, 0])
+                bounds_max.extend([peak.position+3, np.inf, np.inf])
             try:
                 fitted_parameters, covariance = optimize.curve_fit(multiple_gaussian_with_baseline_correction, x, y,
                                                                    p0=initial_parameters, bounds=(bounds_min,bounds_max))
+                for j,peak in enumerate(peaks):
+                    peak.fitted_position = fitted_parameters[j*3+3]
+                    peak.fitted_area = fitted_parameters[j*3+4]
+                    peak.fitted_fwhm = fitted_parameters[j*3+5]
             except RuntimeError:
-                print("ERROR: Couldn't fit parameter: {}".format(self.parameters[i]))
+                print("\nERROR: Couldn't fit parameter: {}".format(self.parameters[i]))
                 fitted_parameters, covariance = [0, 0, 0], [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
             fit_errors.append(np.sqrt(np.diag(covariance)))
             fit_data.append(fitted_parameters)
-            print('Finished fitting parameter: {}'.format(self.parameters[i]))
             self.progressBar.setValue(i)
-        print('*'*5 + '\t Fitting finished\t' + '*'*5)
+        print('\n' + '*'*5 + '\t Fitting finished\t' + '*'*5)
         self.progressBar.hide()
 
         self.fitted_peak_parameters = fit_data
         self.fit_errors = fit_errors
         self.plot_fitted_data()
+        self.show_initial_parameters()
         self.saveFitResultsButton.setEnabled(True)
         self.fitPlotButton.setEnabled(True)
 
@@ -575,14 +599,54 @@ class Window(QDialog):
         self.FitResultPlot = FitResultPlot(self.fitted_peak_parameters, self.fit_errors, self.parameters, self.ax.get_xlim())
         self.FitResultPlot.show()
 
+    def initial_parameters_button_callback(self):
+        if self.showInitialParameters == True:
+            self.showInitialParametersButton.setText('Show fit pars')
+            self.showInitialParameters = False
+        else:
+            self.showInitialParametersButton.setText('Hide fit pars')
+            self.showInitialParameters = True
+        self.show_initial_parameters()
+
+    def show_initial_parameters(self):
+        for line in self.initial_parameter_lines:
+            try: line.remove()
+            except ValueError: pass
+        if self.showInitialParameters == True:
+            self.initial_parameter_lines = []
+            xmin, xmax = self.get_xlimits()
+            x = np.linspace(xmin, xmax, 500)
+            for i,par in enumerate(self.parameters):
+                if len(self.fitted_peak_parameters) > 0:
+                    initial_parameters = list(self.fitted_peak_parameters[i][:3])
+                else:
+                    initial_parameters = [0, 0, 0]
+                peaks = [p for p in self.peaks if p.parameter == par]
+                for peak in peaks:
+                    try:
+                        initial_parameters.extend([peak.fitted_position, peak.fitted_area, peak.fitted_fwhm])
+                    except AttributeError:
+                        initial_parameters.extend([peak.position, peak.area, peak.fwhm])
+                y = multiple_gaussian_with_baseline_correction(x, *initial_parameters)
+                line, = self.ax.plot(x, y+self.stackscale*par, '--', color='k', linewidth=1)
+                self.initial_parameter_lines.append(line)
+
+        self.canvas.draw()
+
+
+
     def onclick(self, event):
-        if event.dblclick:
-            index = (np.abs(self.parameters - event.ydata / self.stackscale)).argmin()
-
-            self.peaks[index] = np.append(self.peaks[index], event.xdata)
+        if event.button == 1 and event.dblclick:
+            parameter = self.parameters[np.abs(self.parameters - event.ydata / self.stackscale).argmin()]
+            peak = Peak(event.xdata, INITIAL_PEAK_AREA, INITIAL_PEAK_FWHM, parameter, manual=True)
+            print(peak)
+            self.peaks.append(peak)
             self.plot_peak_positions()
+            self.show_initial_parameters()
 
-            print(self.peaks[index])
+    def add_peak_with_par(self, eclick, erelease):
+        x = eclick.xdata, erelease.xdata
+        y = eclick.ydata, erelease.ydata
 
     def remove_peaks(self, eclick, erelease):
         '''
@@ -592,18 +656,23 @@ class Window(QDialog):
         '''
         x = eclick.xdata, erelease.xdata
         y = eclick.ydata, erelease.ydata
-        for i in range(len(self.peaks)):
-            if min(y) < self.parameters[i] * self.stackscale < max(y):
-                if len(self.fitted_peak_parameters) > 0:
-                    remove = [list(self.peaks[i]).index(p) for p in self.peaks[i] if min(x) < p < max(x)]
-                    remove = [[x*3+3, x*3+4, x*3+5] for x in remove]
-                    self.fitted_peak_parameters[i] = np.delete(self.fitted_peak_parameters[i], remove)
-                self.peaks[i] = [p for p in self.peaks[i] if not min(x) < p < max(x)]
+        peaks = []
+        for peak in self.peaks:
+            if (min(x) < peak.position < max(x)) and (min(y) < peak.parameter*self.stackscale < max(y)):
+                peak.scatter_point.remove()
+            else:
+                peaks.append(peak)
+        self.peaks = peaks
         self.plot_peak_positions()
-
+        self.show_initial_parameters()
 
     def remove_all_peaks(self):
-        self.peaks = [[] for _ in range(len(self.datalist))]
+        for peak in self.peaks:
+            try:
+                peak.scatter_point.remove()
+            except (AttributeError, ValueError):
+                pass
+        self.peaks = []
         self.plot_peak_positions()
 
     def xlimit_changed(self):
@@ -633,4 +702,4 @@ def run(datalist, parameters):
     main = Window(datalist, parameters)
     main.show()
     sys.exit(app.exec_())
-	
+
