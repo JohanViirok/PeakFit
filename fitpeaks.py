@@ -1,24 +1,112 @@
+import copy
+import os
+import re
 import sys
 from typing import List
-import os
-import copy
 
 import matplotlib.pyplot as plt
 import numpy as np
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QDoubleValidator
+from PyQt5.QtGui import QDoubleValidator, QColor
 from PyQt5.QtWidgets import QDialog, QApplication, QPushButton, QSlider, QLineEdit, QLabel, QHBoxLayout, QVBoxLayout, \
-    QFileDialog, QProgressBar
+    QFileDialog, QProgressBar, QTableWidget, QTableWidgetItem, QHeaderView
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.widgets import RectangleSelector
 from scipy import optimize
-
 from scipy.sparse import csc_matrix, spdiags
 from scipy.sparse.linalg import spsolve
 
 INITIAL_PEAK_AREA = 10
 INITIAL_PEAK_FWHM = 1
+ALLOW_NEGATIVE_PEAKS = True
+
+
+class MyToolbar(NavigationToolbar):
+    def __init__(self, figure_canvas, parent= None):
+        self.Window = parent
+        self.toolitems = (
+              ('Home', 'Reset original view', 'home', 'home'),
+              ('Back', 'Back to  previous view', 'back', 'back'),
+              ('Forward', 'Forward to next view', 'forward', 'forward'),
+              (None, None, None, None),
+              ('Pan', 'Pan axes with left mouse, zoom with right', 'move', 'pan'),
+              ('Zoom', 'Zoom to rectangle', 'zoom_to_rect', 'zoom'),
+              ('Subplots', 'Configure subplots', 'subplots', 'configure_subplots'),
+              (None, None, None, None),
+              ('Save', 'Save the figure', 'filesave', 'save_figure'),
+              (None, None, None, None),
+              ('Add Peak', 'Add peak manually', 'add_peak', 'add_peak_tool'),
+            )
+        NavigationToolbar.__init__(self, figure_canvas, parent= None)
+        self._actions['add_peak_tool'].setCheckable(True)
+
+    def add_peak_tool(self):
+        if self._active == 'ADD':
+            self._active = None
+        else:
+            self._active = 'ADD'
+        if self._idPress is not None:
+            self._idPress = self.canvas.mpl_disconnect(self._idPress)
+            self.mode = ''
+
+        if self._idRelease is not None:
+            self._idRelease = self.canvas.mpl_disconnect(self._idRelease)
+            self.mode = ''
+        if self._active:
+            self._idPress = self.canvas.mpl_connect('button_press_event', self.press_add_peak)
+            self._idRelease = self.canvas.mpl_connect('button_release_event', self.release_add_peak)
+            self.mode = 'add_peak_tool'
+            self.canvas.widgetlock(self)
+        else:
+            self.canvas.widgetlock.release(self)
+
+        self.set_message(self.mode)
+        self._update_buttons_checked()
+
+    def _update_buttons_checked(self):
+        super(MyToolbar, self)._update_buttons_checked()
+        self._actions['add_peak_tool'].setChecked(self._active == 'ADD')
+
+    def press_add_peak(self, event):
+        if event.button == 1:
+            if event.inaxes is not None:
+                self.add_peak_event = event
+                x = np.linspace(*self.canvas.figure.axes[0].get_xlim(), 400)
+                self.draw_fit_line, = self.canvas.figure.axes[0].plot(x, gaussian_width_fwhm(x, event.xdata, 0, 0) + event.ydata*self.Window.stackscale, c='k')
+                self.peak_drawing_binding = self.canvas.mpl_connect('motion_notify_event', self.draw_peak_curve)
+                self.canvas.draw()
+
+    def release_add_peak(self, event):
+        print('release')
+        self.canvas.mpl_disconnect(self.peak_drawing_binding)
+        fwhm = abs(self.add_peak_event.xdata - event.xdata)
+        height = (event.ydata - self.add_peak_event.ydata)*self.Window.stackscale
+        area = height * fwhm * 1.0645889
+        if not ALLOW_NEGATIVE_PEAKS:
+            area = abs(area)
+        parameter = self.Window.parameters[np.abs(self.Window.parameters - self.add_peak_event.ydata).argmin()]
+        peak = Peak(self.add_peak_event.xdata, area, fwhm, parameter, manual=True)
+        print(peak)
+        self.Window.peaks.append(peak)
+        self.draw_fit_line.remove()
+        self.Window.plot_peak_positions()
+        self.Window.show_initial_parameters()
+        self.Window.canvas.draw()
+
+    def draw_peak_curve(self, event):
+        x,y = event.xdata, event.ydata
+        if event.inaxes:
+            dx = abs(x - self.add_peak_event.xdata)
+            dy = (y - self.add_peak_event.ydata)*self.Window.stackscale
+            if not ALLOW_NEGATIVE_PEAKS:
+                dy = abs(dy)
+            xstart, xend = self.canvas.figure.axes[0].get_xlim()
+            y = gaussian_width_fwhm(np.linspace(xstart, xend, 400), self.add_peak_event.xdata, dy, dx)
+            self.draw_fit_line.set_ydata(y + self.add_peak_event.ydata*self.Window.stackscale)
+            # plt.draw()
+            self.canvas.draw()
+
 
 
 def find_positive_peak_positions(data, threshold: float, min_dist: float) -> List[float]:
@@ -53,8 +141,10 @@ def find_positive_peaks(datalist, threshold, min_dist):
 
 
 def gaussian(x, area: float, position: float, fwhm: float):  # Equation by Urmas
-    return area / (fwhm * np.sqrt(np.pi * np.log(2))) * np.exp(-4 * np.log(2) * (x - position) ** 2 / fwhm ** 2)
+    return area / (fwhm * np.sqrt(np.pi / (4*np.log(2)))) * np.exp(-4 * np.log(2) * (x - position) ** 2 / fwhm ** 2)
 
+def gaussian_width_fwhm(x, position:float, height:float, fwhm:float):
+    return height*np.exp(-4*np.log(2)*(x-position)**2 / fwhm**2)
 
 def multiple_gaussian_with_baseline_correction(x, *args):
     '''
@@ -119,6 +209,22 @@ def trim_spectra(spectra, start=None, end=None):
         spectra = np.delete(spectra, larger_than_end, axis=1)
     return spectra
 
+
+def find_num_from_name(fname, decimal_character, delimiter):
+    ''' Returns the first number
+
+    The returnable element is the first occuring number with decimal_character
+    as decimal and surrounded by delimiters
+    '''
+    needs_escaping = ['.']
+    if decimal_character not in needs_escaping:
+        regex = '{0}[-]?[0-9]*{1}[0-9]*{0}'.format(delimiter, decimal_character)
+    else:
+        regex = '{0}[-]?[0-9]*\{1}[0-9]*{0}'.format(delimiter, decimal_character)
+    value = re.search(regex, fname).group()
+    value = float(value.replace(delimiter, '').replace(decimal_character, "."))
+    return value
+
 class FitResultPlot(QDialog):
     def __init__(self, fitted_parameters, fit_errors, parameters, xlimits):
         super(FitResultPlot, self).__init__()
@@ -168,9 +274,9 @@ class Peak():
         return f'Peak ['f'pos: {self.position:.2f}, area: {self.area:.2f}, fwhm: {self.fwhm:.2f}, parameter: {self.parameter:.2f}]'
 
 
-class Window(QDialog):
+class MainWindow(QDialog):
     def __init__(self, datalist, parameters, parent=None):
-        super(Window, self).__init__(parent)
+        super(MainWindow, self).__init__(parent)
         self.parameters = parameters
 
         for i, data in enumerate(datalist):
@@ -193,7 +299,10 @@ class Window(QDialog):
         # a figure instance to plot on
         self.figure = plt.figure(figsize=(10, 10))
         self.canvas = FigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.toolbar = MyToolbar(self.canvas, self)
+        button_press_id = self.figure.canvas.mpl_connect('button_press_event', self.onclick)
+        # button_release_id = self.figure.canvas.mpl_connect('button_release_event', self.onrelease)
+
 
         # Box for buttons
         self.resetButton = QPushButton('Reset plot')
@@ -403,23 +512,29 @@ class Window(QDialog):
     def plot(self):
         self.figure.clear()
         self.ax = self.figure.add_subplot(111)
+        self.ax2 = self.ax.twinx()
+        self.ax.callbacks.connect("ylim_changed", self.convert_ax_to_ax2)
         self.als_baselines = []
         self.als_baseline_lines = []
         self.fit_lines = []
-        # self.trim_spectra()
 
         self.lines = plot_waterfall(self.datalist, self.parameters, self.ax, stackscale=self.stackscale, line_color='red')
         self.plot_peak_positions()
         self.show_initial_parameters()
         self.ax.set_xlabel('Wavenumber (cm$^{-1}$)')
+        self.ax.set_ylabel('Absorption')
+        self.ax2.set_ylabel('Parameter')
+        self.figure.sca(self.ax)
+        print(self.figure.gca())
 
-        self.rectangle_selector = RectangleSelector(self.ax, self.remove_peaks, drawtype='box', useblit=True, button=[3],
+        self.rectangle_selector = RectangleSelector(self.ax2, self.remove_peaks, drawtype='box', useblit=True, button=[3],
                                                     minspanx=5, minspany=5, spancoords='pixels', interactive=False)
-        self.left_click_drag = RectangleSelector(self.ax, self.add_peak_with_par, drawtype='box', useblit=True, button=[1],
-                                                    minspanx=5, minspany=5, spancoords='pixels', interactive=False)
-        cid = self.figure.canvas.mpl_connect('button_press_event', self.onclick)
         self.change_xlimit()
         self.canvas.draw()
+
+    def convert_ax_to_ax2(self, ax):
+        y1, y2 = ax.get_ylim()
+        self.ax2.set_ylim(y1/self.stackscale, y2/self.stackscale)
 
     def change_xlimit(self):
         xmin, xmax = self.get_xlimits()
@@ -476,7 +591,7 @@ class Window(QDialog):
         self.minDistValueBox.setText(str(self.minDistSlider.value()))
 
     def find_peaks(self):
-        peaks = find_positive_peaks(self.datalist, threshold=float(self.thresholdValueBox.text()),
+        new_peaks = find_positive_peaks(self.datalist, threshold=float(self.thresholdValueBox.text()),
                                     min_dist=self.minDistSlider.value())
 
         for peak in self.peaks:
@@ -486,11 +601,17 @@ class Window(QDialog):
                 except (AttributeError, ValueError):
                     pass
 
+        manual_peaks = [p for p in self.peaks if p.manual]
         self.peaks = [p for p in self.peaks if p.manual]
-        for i,row in enumerate(peaks):
+        for i,row in enumerate(new_peaks):
             parameter = self.parameters[i]
             for peak_position in row:
-                self.peaks.append(Peak(peak_position, INITIAL_PEAK_AREA, INITIAL_PEAK_FWHM, parameter))
+                for p in manual_peaks:
+                    if parameter == p.parameter:
+                        if abs(p.position - peak_position) < int(self.minDistValueBox.text()):
+                            break
+                else:
+                    self.peaks.append(Peak(peak_position, INITIAL_PEAK_AREA, INITIAL_PEAK_FWHM, parameter))
         self.plot_peak_positions()
 
     def plot_peak_positions(self):
@@ -506,11 +627,10 @@ class Window(QDialog):
         self.canvas.draw()
 
     def fit_peaks(self):
+        for peak in self.peaks:
+            print(peak)
         self.progressBar.show()
-        # peaks = self.peaks
         fit_data, lines, fit_errors = [], [], []
-        use_previous_fit_results = len(self.fitted_peak_parameters) > 0
-        use_previous_fit_results = False
         als_baseline_calculated = len(self.als_baselines) > 0
 
         print('Fitting parameter: ', end='')
@@ -528,7 +648,10 @@ class Window(QDialog):
                     initial_parameters.extend([peak.fitted_position, peak.fitted_area, peak.fitted_fwhm])
                 except AttributeError:
                     initial_parameters.extend([peak.position, peak.area, peak.fwhm])
-                bounds_min.extend([peak.position-3, 0, 0])
+                if ALLOW_NEGATIVE_PEAKS:
+                    bounds_min.extend([peak.position-3, -np.inf, 0])
+                else:
+                    bounds_min.extend([peak.position-3, 0, 0])
                 bounds_max.extend([peak.position+3, np.inf, np.inf])
             try:
                 fitted_parameters, covariance = optimize.curve_fit(multiple_gaussian_with_baseline_correction, x, y,
@@ -576,7 +699,6 @@ class Window(QDialog):
             if not lines_exist_already:
                 self.fit_lines = lines
         self.canvas.draw()
-
 
     def save_fit_results(self):
         num_of_peaks = [int((len(x) - 3) / 3) for x in self.fitted_peak_parameters]
@@ -633,20 +755,29 @@ class Window(QDialog):
 
         self.canvas.draw()
 
+    def draw_fit_curve(self, event):
+        x,y = event.xdata, event.ydata
+        if event.inaxes:
+            dx = abs(x - self.left_click_event.xdata)
+            dy = abs(y - self.left_click_event.ydata)
+            xstart, xend = self.get_xlimits()
+            y = gaussian_width_fwhm(np.linspace(xstart, xend, 400), self.left_click_event.xdata, dy, dx)
+            self.draw_fit_line.set_ydata(y + self.left_click_event.ydata)
+            # plt.draw()
+            self.canvas.draw()
 
 
     def onclick(self, event):
+        print(self.figure.gca())
         if event.button == 1 and event.dblclick:
-            parameter = self.parameters[np.abs(self.parameters - event.ydata / self.stackscale).argmin()]
+            parameter = self.parameters[np.abs(self.parameters - event.ydata).argmin()]
             peak = Peak(event.xdata, INITIAL_PEAK_AREA, INITIAL_PEAK_FWHM, parameter, manual=True)
             print(peak)
             self.peaks.append(peak)
             self.plot_peak_positions()
             self.show_initial_parameters()
 
-    def add_peak_with_par(self, eclick, erelease):
-        x = eclick.xdata, erelease.xdata
-        y = eclick.ydata, erelease.ydata
+
 
     def remove_peaks(self, eclick, erelease):
         '''
@@ -658,7 +789,7 @@ class Window(QDialog):
         y = eclick.ydata, erelease.ydata
         peaks = []
         for peak in self.peaks:
-            if (min(x) < peak.position < max(x)) and (min(y) < peak.parameter*self.stackscale < max(y)):
+            if (min(x) < peak.position < max(x)) and (min(y) < peak.parameter < max(y)):
                 peak.scatter_point.remove()
             else:
                 peaks.append(peak)
@@ -696,10 +827,115 @@ class Window(QDialog):
         self.plot_fitted_data()
         self.subtractALSButton.setEnabled(True)
 
+
+class SelectFilesWindow(QDialog):
+    def __init__(self, parent=None):
+        super(SelectFilesWindow, self).__init__(parent)
+        self.resize(600, 600)
+        self.setWindowTitle('Select peaks for fitting')
+        self.layout = QHBoxLayout()
+        self.left_layout = QVBoxLayout()
+
+        self.filenameDecimalCharacter = 'T'
+        self.filenameDelimiter = '_'
+
+        # self.spectraFullFileNames = []
+        self.spectraFileNamesTable = QTableWidget()
+        self.spectraFileNamesTable.setColumnCount(2)
+        self.spectraFileNamesTable.setHorizontalHeaderLabels(['Filename','Parameter'])
+
+        self.selectFilesButton = QPushButton('Select files')
+        self.selectFilesButton.clicked.connect(self.select_spectra_names_dialog)
+        self.left_layout.addWidget(self.selectFilesButton)
+
+        self.filenameDecimalCharacterLabel = QLabel(self)
+        self.filenameDecimalCharacterLabel.setText('Decimal:')
+        self.filenameDecimalCharacter = QLineEdit(self)
+        self.filenameDecimalCharacter.setText('T')
+        self.filenameDecimalCharacter.setFixedWidth(50)
+        self.filenameDecimalCharacter.editingFinished.connect(self.update_parameters)
+        self.left_layout.addWidget(self.filenameDecimalCharacterLabel)
+        self.left_layout.addWidget(self.filenameDecimalCharacter)
+
+        self.filenameDelimiterLabel = QLabel(self)
+        self.filenameDelimiterLabel.setText('Delimiter:')
+        self.filenameDelimiter = QLineEdit(self)
+        self.filenameDelimiter.setText('_')
+        self.filenameDelimiter.setFixedWidth(50)
+        self.filenameDelimiter.editingFinished.connect(self.update_parameters)
+        self.left_layout.addWidget(self.filenameDelimiterLabel)
+        self.left_layout.addWidget(self.filenameDelimiter)
+
+        self.left_layout.addStretch(1)
+        self.selectFilesButton = QPushButton('FIT')
+        self.selectFilesButton.clicked.connect(self.send_to_fit)
+        self.left_layout.addWidget(self.selectFilesButton)
+
+        self.layout.addLayout(self.left_layout)
+        self.layout.addWidget(self.spectraFileNamesTable)
+        self.setLayout(self.layout)
+
+    def select_spectra_names_dialog(self):
+        options = QFileDialog.Options()
+        options |= QFileDialog.DontUseNativeDialog
+        files, _ = QFileDialog.getOpenFileNames(self, "Open files to be fitted", "", "*.dat files (*.dat);;All Files (*)", options=options)
+        if files:
+            self.fill_table(files)
+
+    def fill_table(self, files):
+        self.spectraFileNamesTable.clearContents()
+        self.spectraFileNamesTable.setRowCount(len(files))
+        for i, filename in enumerate([os.path.basename(f) for f in files]):
+            table_item = QTableWidgetItem(filename)
+            table_item.setData(Qt.UserRole, files[i])
+            self.spectraFileNamesTable.setItem(i, 0, table_item)
+        self.update_parameters()
+        header = self.spectraFileNamesTable.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+
+    def update_parameters(self):
+        errors = False
+        for i in range(self.spectraFileNamesTable.rowCount()):
+            filename = self.spectraFileNamesTable.item(i,0).text()
+            try:
+                par = find_num_from_name(filename, self.filenameDecimalCharacter.text(), self.filenameDelimiter.text())
+            except (AttributeError, ValueError):
+                par = 'Not found'
+                errors = True
+            self.spectraFileNamesTable.setItem(i, 1, QTableWidgetItem(str(par)))
+            if par == 'Not found':
+                self.spectraFileNamesTable.item(i, 1).setBackground(QColor(255, 0, 0))
+        if errors:
+            self.selectFilesButton.setEnabled(False)
+        else:
+            self.selectFilesButton.setEnabled(True)
+
+
+    def send_to_fit(self):
+        name_list = []
+        parameters = []
+        for i in range(self.spectraFileNamesTable.rowCount()):
+            name_list.append(self.spectraFileNamesTable.item(i,0).data(Qt.UserRole))
+        datalist = [np.loadtxt(filename, unpack=True) for filename in name_list]
+        for name in name_list:
+            parameters.append(find_num_from_name(name, self.filenameDecimalCharacter.text(), self.filenameDelimiter.text()))
+        main = MainWindow(datalist, parameters)
+        main.show()
+
+
 def run(datalist, parameters):
     app = 0  # Fix for spyder crashing on consequent runs
     app = QApplication(sys.argv)
-    main = Window(datalist, parameters)
+    main = MainWindow(datalist, parameters)
     main.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    app = 0  # Fix for spyder crashing on consequent runs
+    app = QApplication(sys.argv)
+    select_files = SelectFilesWindow()
+    select_files.show()
     sys.exit(app.exec_())
 
