@@ -6,8 +6,8 @@ from typing import List
 
 import matplotlib.pyplot as plt
 import numpy as np
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QDoubleValidator, QColor
+from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtGui import QDoubleValidator, QColor, QIcon
 from PyQt5.QtWidgets import QDialog, QApplication, QPushButton, QSlider, QLineEdit, QLabel, QHBoxLayout, QVBoxLayout, \
     QFileDialog, QProgressBar, QTableWidget, QTableWidgetItem, QHeaderView
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -874,6 +874,17 @@ class SelectFilesWindow(QDialog):
         self.layout.addLayout(self.left_layout)
         self.layout.addWidget(self.spectraFileNamesTable)
         self.setLayout(self.layout)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        files = [u.toLocalFile() for u in event.mimeData().urls()]
+        self.fill_table(files)
 
     def select_spectra_names_dialog(self):
         options = QFileDialog.Options()
@@ -935,6 +946,13 @@ def run(datalist, parameters):
 if __name__ == "__main__":
     app = 0  # Fix for spyder crashing on consequent runs
     app = QApplication(sys.argv)
+
+    # This part needed for taskbar icon, see here: https://stackoverflow.com/questions/1551605/how-to-set-applications-taskbar-icon-in-windows-7
+    import ctypes
+    myappid = u'mycompany.myproduct.subproduct.version'  # arbitrary string
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    app.setWindowIcon(QIcon('images/if_trends_1054952-512.png'))
+
     select_files = SelectFilesWindow()
     select_files.show()
     sys.exit(app.exec_())
