@@ -948,10 +948,12 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     # This part needed for taskbar icon, see here: https://stackoverflow.com/questions/1551605/how-to-set-applications-taskbar-icon-in-windows-7
-    import ctypes
-    myappid = u'mycompany.myproduct.subproduct.version'  # arbitrary string
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-    app.setWindowIcon(QIcon('images/if_trends_1054952-512.png'))
+    image_path = 'images/if_trends_1054952-5122.png'
+    if os.path.exists(image_path):
+        import ctypes
+        myappid = u'kbfi.peakfit.1.0'  # arbitrary string
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        app.setWindowIcon(QIcon(image_path))
 
     select_files = SelectFilesWindow()
     select_files.show()
