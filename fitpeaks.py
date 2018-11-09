@@ -78,7 +78,6 @@ class MyToolbar(NavigationToolbar):
                 self.canvas.draw()
 
     def release_add_peak(self, event):
-        print('release')
         self.canvas.mpl_disconnect(self.peak_drawing_binding)
         fwhm = abs(self.add_peak_event.xdata - event.xdata)
         height = (event.ydata - self.add_peak_event.ydata)*self.Window.stackscale
@@ -87,7 +86,6 @@ class MyToolbar(NavigationToolbar):
             area = abs(area)
         parameter = self.Window.parameters[np.abs(self.Window.parameters - self.add_peak_event.ydata).argmin()]
         peak = Peak(self.add_peak_event.xdata, area, fwhm, parameter, manual=True)
-        print(peak)
         self.Window.peaks.append(peak)
         self.draw_fit_line.remove()
         self.Window.plot_peak_positions()
@@ -485,7 +483,6 @@ class MainWindow(QDialog):
 
     def ALSLambda_valuebox_changed(self):
         value = float(self.ALSLambdaValueBox.text())*10
-        print(value)
         self.ALSLambdaSlider.setValue(int(value))
         self.calculate_als_baseline()
 
@@ -538,7 +535,6 @@ class MainWindow(QDialog):
         self.ax.set_ylabel('Absorption')
         self.ax2.set_ylabel('Parameter')
         self.figure.sca(self.ax)
-        print(self.figure.gca())
 
         self.rectangle_selector = RectangleSelector(self.ax2, self.remove_peaks, drawtype='box', useblit=True, button=[3],
                                                     minspanx=5, minspany=5, spancoords='pixels', interactive=False)
@@ -640,8 +636,6 @@ class MainWindow(QDialog):
         self.canvas.draw()
 
     def fit_peaks(self):
-        for peak in self.peaks:
-            print(peak)
         self.progressBar.show()
         fit_data, lines, fit_errors = [], [], []
         als_baseline_calculated = len(self.als_baselines) > 0
@@ -781,11 +775,9 @@ class MainWindow(QDialog):
 
 
     def onclick(self, event):
-        print(self.figure.gca())
         if event.button == 1 and event.dblclick:
             parameter = self.parameters[np.abs(self.parameters - event.ydata).argmin()]
             peak = Peak(event.xdata, INITIAL_PEAK_AREA, INITIAL_PEAK_FWHM, parameter, manual=True)
-            print(peak)
             self.peaks.append(peak)
             self.plot_peak_positions()
             self.show_initial_parameters()
