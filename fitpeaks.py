@@ -375,6 +375,7 @@ class MainWindow(QDialog):
         self.ALSLambdaValueBox = QLineEdit(self)
         self.ALSLambdaValueBox.setFixedWidth(50)
         self.ALSLambdaValueBox.setText(str(self.ALSLambdaSlider.value() / 10))
+        self.ALSLambdaValueBox.editingFinished.connect(self.ALSLambda_valuebox_changed)
         self.ALSLambdaBox = QHBoxLayout()
         self.ALSLambdaBox.addWidget(self.ALSLambdaLabel)
         self.ALSLambdaBox.addWidget(self.ALSLambdaValueBox)
@@ -393,6 +394,7 @@ class MainWindow(QDialog):
         self.ALSPositiveWeightValueBox = QLineEdit(self)
         self.ALSPositiveWeightValueBox.setFixedWidth(50)
         self.ALSPositiveWeightValueBox.setText(str(self.ALSPositiveWeightSlider.value() / 100000))
+        self.ALSPositiveWeightValueBox.editingFinished.connect(self.ALSPositiveWeight_valuebox_changed)
         self.ALSPositiveWeightBox = QHBoxLayout()
         self.ALSPositiveWeightBox.addWidget(self.ALSPositiveWeightLabel)
         self.ALSPositiveWeightBox.addWidget(self.ALSPositiveWeightValueBox)
@@ -480,6 +482,17 @@ class MainWindow(QDialog):
         self.setLayout(layout)
         self.plot()
         # self.find_peaks()
+
+    def ALSLambda_valuebox_changed(self):
+        value = float(self.ALSLambdaValueBox.text())*10
+        print(value)
+        self.ALSLambdaSlider.setValue(int(value))
+        self.calculate_als_baseline()
+
+    def ALSPositiveWeight_valuebox_changed(self):
+        value = float(self.ALSPositiveWeightValueBox.text())*100000
+        self.ALSPositiveWeightSlider.setValue(int(value))
+        self.calculate_als_baseline()
 
     def calculate_als_baseline(self):
         lambda_ = self.ALSLambdaSlider.value() / 10
