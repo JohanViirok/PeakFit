@@ -553,10 +553,10 @@ class MainWindow(QDialog):
 
     def autoscale_y_axis(self):
         if self.stackscaleSlider.value() >= 0:
-            ymin = np.min([np.min(x[1]) for x in self.datalist])
+            ymin = np.min([np.min(x[1])+self.parameters[i]*self.stackscale for i,x in enumerate(self.datalist)])
             ymax = np.max([np.max(x[1])+self.parameters[i]*self.stackscale for i,x in enumerate(self.datalist)])
         else:
-            ymax = np.max([np.max(x[1]) for x in self.datalist])
+            ymax = np.max([np.max(x[1])+self.parameters[i]*self.stackscale for i,x in enumerate(self.datalist)])
             ymin = np.min([np.min(x[1])+self.parameters[i]*self.stackscale for i,x in enumerate(self.datalist)])
         delta = abs(ymax-ymin)*0.02
         self.ax.set_ylim((ymin-delta, ymax+delta))
