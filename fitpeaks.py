@@ -953,7 +953,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     # This part needed for taskbar icon, see here: https://stackoverflow.com/questions/1551605/how-to-set-applications-taskbar-icon-in-windows-7
-    image_path = 'images/if_trends_1054952-5122.png'
+    image_path = 'images/icon.png'
     if os.path.exists(image_path):
         import ctypes
         myappid = u'kbfi.peakfit.1.0'  # arbitrary string
